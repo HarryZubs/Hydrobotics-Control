@@ -58,10 +58,10 @@ void readPROM() {
 
 void setup() {
 // initialize serial communication at 9600 bits per second:
-  pinMode(D2, OUTPUT);
   pinMode(D3, OUTPUT);
-  pinMode(D9, INPUT);
-  pinMode(D10, INPUT);
+  pinMode(D4, OUTPUT);
+  pinMode(A3, INPUT);
+  pinMode(A4, INPUT);
   encoder.attach(D9, D10);
   Serial.begin(115200);
 
@@ -116,14 +116,12 @@ uint32_t readADC() {
 void loop() {
   //initialise wifi network
   WiFiClient client = server.available();
-  
 
     //depth sensor stuff
   // start pressure conversion
   Wire.beginTransmission(SENSOR_ADDR);
   Wire.write(CMD_CONVERT_D1);
   Wire.endTransmission();
-  delay(10);
 
   uint32_t D1 = readADC();
 
@@ -131,7 +129,6 @@ void loop() {
   Wire.beginTransmission(SENSOR_ADDR);
   Wire.write(CMD_CONVERT_D2);
   Wire.endTransmission();
-  delay(10);
 
   uint32_t D2 = readADC();
 
@@ -168,9 +165,6 @@ void loop() {
   //assign error to error from previous cycle and overwrite the error variable with current error
   previousError = error;
   error = depth_m - targetDepth;
-  
-  //ensures that delta time does not become too small causing PID to runaway
-  delay(2);
 
   //prevent change in time from being zero to ensure derivative is always a real value
   if (deltaTime <= 0) {
@@ -188,26 +182,26 @@ void loop() {
   output = error * propGain + derivative * derivativeGain + integral * integralGain;
   //limit output to value between 255 and -255 to prevent overcorrection
   output = constrain(output, -255, 255);
-  if (timeElapsed > 0){
-    if (output > 0) {
-      analogWrite(D3, output);
-      analogWrite(D2, LOW);
-    } else {
-      analogWrite(D3, LOW);
-      analogWrite(D2, -output);
-    }
-  }
+  digitalWrite(D4, HIGH);
+  digitalWrite(D3, LOW);
+
 
   if (timeElapsed - lastPrint >= 250) {
-    Serial.print(currentTicks);
-    Serial.print(",");
-    Serial.println(targetDepth);
+    //Serial.print(currentTicks);
+    //Serial.print(",");
+    //Serial.println(targetDepth);
     lastPrint = timeElapsed;
   }
   float rpm = (deltaTicks/4095)*(1/(deltaTime)) * 60;
 
-  if (client) {
-    Serial.println("true");
-    client.write(depth_m);
+  // Accept new client
+  if (!client || !client.connected()) {
+      client = server.available();
+  }
+
+  // If client is connected, send data every loop cycle
+  if (client && client.connected()) {
+      client.println(temperature_C);   // send data every loop
+      Serial.println(temperature_C);
   }
 }
