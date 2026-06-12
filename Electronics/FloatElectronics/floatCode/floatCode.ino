@@ -1,6 +1,11 @@
+//wifi library for data transmission and remote input commands
 #include <WiFi.h>
-#include "MS5837.h"
+//ms5837 depth sensor chip library
+#include <MS5837.h>
+//i2c library
+#include <Wire.h>
 
+//set wifi network name to 'hydroboticsDataTransmission' and password to 'controlfloat' 
 const char* ssid = "hydroboticsDataTransmission";
 const char* password = "controlfloat";
 
@@ -9,30 +14,33 @@ WiFiServer server(1234);
 WiFiClient client; 
 bool clientPresent = false; 
 
-//logic variables
+//initialise MS5837 sensor object
+MS5837 sensor;
+
+//logic variables for pump
 bool sequenceRunning = false;
 bool reverse = false; 
 bool pumpIn = false; 
 bool pumpOut = false; 
-unsigned long stepStartTime = 0;
-int step = 0;
-unsigned long manualStartTime = 0;
-const unsigned long MANUAL_DURATION = 10000; // 10 seconds
+bool pumpAir = false; 
+String ClientInput = "";
+
 
 void setup() {
   //start data transmission
   Serial.begin(115200);
 
-  pinMode(A3, OUTPUT);
-  pinMode(A2, OUTPUT);
-
   //start WiFi as server 
   WiFi.mode(WIFI_AP);
   server.begin();
 
-  //start wifi with username and password above
+  //start i2c
+  Wire.begin();
+
+  //start wifi with network name and password above
   bool ok = WiFi.softAP(ssid, password);
 
+  //if wifi network initiated, display ip address, otherwise return failed to console
   if (ok) {
     Serial.println("Network started");
     Serial.print("IP address: ");
@@ -40,117 +48,100 @@ void setup() {
   } else {
     Serial.println("failed");
   }
+
+  //if sensor not connected print init failed
+  while (!sensor.init()) {
+    Serial.println("Init failed!");
+    delay(5000);
+  }
+  
+  //set model type, 2BA or 3BA
+  sensor.setModel(MS5837::MS5837_30BA);
+  sensor.setFluidDensity(997);
 }
 
 void testSequence() {
+  //pump in water and let pumps run for 25 seconds
+  digitalWrite(A3, HIGH);
+  digitalWrite(A2, LOW);
+  delay(25000);
 
+  //stop pumps for 5 seconds
+  digitalWrite(A3, LOW);
+  digitalWrite(A2, LOW);
+  delay(5000);
 
-  unsigned long currentTime = millis();
+  //pump water out for 25 seconds then stop pumps 
+  digitalWrite(A3, LOW);
+  digitalWrite(A2, HIGH);
+  delay(25000);
 
-  switch (step) {
-    case 0: // Pump in 20 sec
-    //write pump to go in one direction, check this before testing in water, if opposite, swap A3 to low and A2 to high 
-    //swap A3 to high and A2 to low in the second case for when the pump swaps direction
-    //do similar swaps in loop function below where i have marked
-      digitalWrite(A3, HIGH);
-      digitalWrite(A2, LOW);
-
-      if (currentTime - stepStartTime >= 20000) {
-        step = 1;
-        stepStartTime = currentTime;
-      }
-      break;
-    case 1: // Wait 5 sec
-      digitalWrite(A3, LOW);
-      digitalWrite(A2, LOW);
-
-      if (currentTime - stepStartTime >= 5000) {
-        step = 2;
-        stepStartTime = currentTime;
-      }
-      break;
-    case 2: //pump in opposite direction to first test case to pump water out
-      digitalWrite(A3, LOW);
-      digitalWrite(A2, HIGH);
-
-      if (currentTime - stepStartTime >= 20000) {
-        stopSequence();
-      }
-      break;
-  }
+  stopSequence();
 }
 
 //sequence to stop the test midway
 void stopSequence() {
+  //reset pump pin voltages
   digitalWrite(A3, LOW);
   digitalWrite(A2, LOW);
   sequenceRunning = false;
-  step = 0;
 }
 
 void loop() {
-  static String msgBuffer = "";
 
   // Accept new client only if none is connected
   if (!client || !client.connected()) {
     //initiates a new client if there is no client currently connected 
     WiFiClient newClient = server.available();
-    if (newClient) {
-      client = newClient;
-      //outputs connected to esp32 on client network
-      Serial.println("Client connected!");
-      client.println("Connected to ESP32");
-    }
+
+    //print client connected to computer console and Connected to ESP32 to client console
+    Serial.println("Client connected!");
+    client.println("Connected to ESP32");
   }
 
-  // Read incoming data from client (non-blocking)
-  while (client && client.connected() && client.available()) {
-    //read character from client and add to an array that holds the message
-    char c = client.read();
-    if (c != '\r') { // ignore carriage return
-      msgBuffer += c;
-    }
+  //read input from client if there is one
+  if (client.readString() != ""){
+    ClientInput = client.readString();
   }
+  
+  if (ClientInput == "starttest") {
+    //starts the test sequence and takes a time variable at that time
+    sequenceRunning = true;
+    pumpIn = false;
+    pumpOut = false;
+    pumpAir = false;
+    client.println("Test started");
 
-  // Process message if any data is in buffer
-  if (msgBuffer.length() > 0) {
-  msgBuffer.trim();
-  Serial.println("Received: " + msgBuffer);
+  } else if (ClientInput == "stoptest") {
+    //stops the test sequence 
+    stopSequence();
+    pumpIn = false;
+    pumpOut = false;
+    pumpAir = false;
+    client.println("Test stopped");
 
-    if (msgBuffer.equalsIgnoreCase("starttest")) {
-      //starts the test sequence and takes a time variable at that time
-      sequenceRunning = true;
-      pumpIn = false;
-      pumpOut = false;
-      step = 0;
-      stepStartTime = millis();
-      client.println("Test started");
+  } else if (ClientInput == "pumpin") {
+    //starts sequence to pump water into the tank for 10 seconds
+    stopSequence();
+    pumpIn = true;
+    pumpOut = false;
+    pumpAir = false;
+    client.println("Pumping in for 10 seconds");
 
-    } else if (msgBuffer.equalsIgnoreCase("stoptest")) {
-      //stops the test sequence 
-      stopSequence();
-      pumpIn = false;
-      pumpOut = false;
-      client.println("Test stopped");
-
-    } else if (msgBuffer.equalsIgnoreCase("pumpin")) {
-
-      stopSequence();
-      pumpIn = true;
-      pumpOut = false;
-      manualStartTime = millis();
-      client.println("Pumping in for 10 seconds");
-
-    } else if (msgBuffer.equalsIgnoreCase("pumpout")) {
-
-      stopSequence();
-      pumpOut = true;
-      pumpIn = false;
-      manualStartTime = millis();
-      client.println("Pumping out for 10 seconds");
-    }
-
-    msgBuffer = "";
+  } else if (ClientInput == "pumpout") {
+    //starts sequence to pump water out of the tank for 10 seconds
+    stopSequence();
+    pumpOut = true;
+    pumpIn = false;
+    pumpAir = false;
+    client.println("Pumping out for 10 seconds");
+  } else if (ClientInput == "pumpair") {
+    //pumps air out of the water tank to maximise water capacity
+    stopSequence();
+    pumpOut = false;
+    pumpIn = false;
+    pumpAir = true; 
+    client.println("Pumping air");
   }
 
   // Control the pump continuously
@@ -160,32 +151,57 @@ void loop() {
 
   } else if (pumpIn) {
     //swap high with low and vice versa if the pump is pumping out instead of in
+    //pumps in for 35 seconds
     digitalWrite(A3, HIGH);
     digitalWrite(A2, LOW);
+    delay(35000);
+    //stop pump and reset variable
+    pumpIn = false;
+    digitalWrite(A3, LOW);
+    digitalWrite(A2, LOW);
+    Serial.println("Pump in complete");
 
-  //if the time since starting the pump sequence and current time is greater than the duration of the manual control, then stop the pumps
-    if (millis() - manualStartTime >= MANUAL_DURATION) {
-      pumpIn = false;
-      digitalWrite(A3, LOW);
-      digitalWrite(A2, LOW);
-      Serial.println("Pump in complete");
-    }
   } else if (pumpOut) {
     //swap high with low and vice versa if the pump is pumping in instead of out
+    //pumps out for 35 seconds
     digitalWrite(A3, LOW);
     digitalWrite(A2, HIGH);
+    delay(35000);
+    pumpOut = false;
+    digitalWrite(A3, LOW);
+    digitalWrite(A2, LOW);
+    Serial.println("Pump out complete");
 
-    //if the time since starting the pump sequence and current time is greater than the duration of the manual control, then stop the pumps
-    if (millis() - manualStartTime >= MANUAL_DURATION) {
-      pumpOut = false;
-      digitalWrite(A3, LOW);
-      digitalWrite(A2, LOW);
-      Serial.println("Pump out complete");
-    }
-
-  } else {
-
+  //if pump air variable is equal to true, pump out for 5 seconds then stop pumps and reset pumpAir variable
+  } else if(pumpAir == true){
+    digitalWrite(A3, LOW);
+    digitalWrite(A2, HIGH);
+    delay(5000);
+    digitalWrite(A3, LOW);
+    digitalWrite(A2, LOW);
+    pumpAir = false;
+  }
+  
+  //if no variables true then reset pumps
+  else {
     digitalWrite(A3, LOW);
     digitalWrite(A2, LOW);
   }
+
+  //code for transmitting data to client
+  //snippet used is from bluerobotics ms5837 library
+  sensor.read();
+
+  //print temperature data to client console each clock cycle
+  client.print("Temperature: "); 
+  client.print(sensor.temperature()); 
+  client.println(" deg C");
+  
+  //print depth data to client console every clock cycle
+  client.print("Depth: "); 
+  client.print(sensor.depth()); 
+  client.println(" m");
+
+  //reset client input variable
+  ClientInput = "";
 }
